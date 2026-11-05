@@ -1,0 +1,17 @@
+[Unit]
+Description=LXBoot diskless control daemon
+After=network.target
+
+[Service]
+Type=simple
+Environment=LXBOOT_PREFIX=/var/lib/lxboot
+Environment=LXBOOT_ETC=/etc/lxboot
+Environment=LXBOOT_SOCK=/run/lxboot/lxbootd.sock
+Environment=LXBOOT_APPLY=1
+ExecStartPre=/bin/mkdir -p /var/lib/lxboot /etc/lxboot /run/lxboot /var/log/lxboot
+ExecStart=/usr/bin/lxbootd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

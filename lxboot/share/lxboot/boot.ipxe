@@ -1,0 +1,7 @@
+#!ipxe
+# Fallback template; runtime.apply overwrites tftp/boot.ipxe
+set initiator-iqn iqn.2026-11.lxboot.client:${net0/mac}
+echo LXBoot diskless ${mac}
+set keep-san 1
+sanhook iscsi:${next-server}::::iqn.2026-11.lxboot:client-${mac:hexhyp}
+sanboot iscsi:${next-server}::::iqn.2026-11.lxboot:client-${mac:hexhyp} || shell

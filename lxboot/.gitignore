@@ -1,0 +1,9 @@
+/build/
+/cmake-build-*/
+*.user
+.qt/
+.qtc_clangd/
+*.o
+*.a
+*.so
+CMakeUserPresets.json

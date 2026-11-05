@@ -1,0 +1,11 @@
+[Unit]
+Description=LXBoot dnsmasq (DHCP+TFTP)
+After=network.target lxbootd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq -k -C /etc/lxboot/dnsmasq.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

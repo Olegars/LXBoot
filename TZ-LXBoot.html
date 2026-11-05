@@ -1,0 +1,390 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<title>ТЗ LXBoot — diskless Linux appliance</title>
+<style>body{font-family:DejaVu Sans,Liberation Sans,sans-serif;font-size:11pt;line-height:1.35;max-width:900px;margin:24px auto;padding:0 24px;color:#111}
+h1{font-size:20pt}h2{font-size:14pt;margin-top:1.4em}h3{font-size:12pt}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:10pt}
+th,td{border:1px solid #444;padding:4px 6px;vertical-align:top}
+th{background:#eee}code,pre{font-family:DejaVu Sans Mono,monospace;font-size:9pt}
+pre{background:#f6f6f6;padding:8px;white-space:pre-wrap}
+hr{border:none;border-top:1px solid #999;margin:1.5em 0}</style></head><body>
+<h1>Техническое задание</h1>
+<h2>Специализированная Linux-ОС (appliance) для бездисковой загрузки клиентских ПК</h2>
+<p>**Рабочее название продукта:** LXBoot  </p>
+<p>**Аналог:** CCBoot / CCBoot Cloud, но **не на Windows-сервере**, а на **минимальном Linux-appliance**  </p>
+<p>**Тип системы:** diskless boot (PXE + iSCSI/NBD)  </p>
+<p>**Версия документа:** 1.0  </p>
+<p>**Дата:** 05.11.2026  </p>
+<p>**Статус:** проект ТЗ для разработки  </p>
+<p>**Источник постановки:** `/home/oleg/Загрузки/сделай_тз_на_аналог_ccbot_но_не_на_windows_а_на_l_.pdf`</p>
+<hr>
+<h2>1. Общие сведения</h2>
+<h3>1.1. Предмет разработки</h3>
+<p>Программно-аппаратный комплекс: **минималистичная специализированная ОС на ядре Linux** (Linux-appliance), предназначенная для централизованной **бездисковой загрузки** клиентских ПК по сети. Клиенты работают без локального системного диска: ОС, приложения и (опционально) игровые/данные-диски отдаются с сервера.</p>
+<p>Сервер **не является** обычным дистрибутивом Linux с графической оболочкой и пакетами «на все случаи». Это **урезанная Live/DOM-система** с собственной оболочкой управления (TUI и/или Web). После загрузки администратор **не видит стандартную консоль Linux**, а попадает в меню продукта.</p>
+<h3>1.2. Цели проекта</h3>
+<p>1. Заменить Windows-сервер CCBoot Linux-appliance с сопоставимым сценарием для интернет-кафе, учебных классов, офисов и лабораторий.</p>
+<p>2. Обеспечить загрузку 50+ клиентских ПК с одного сервера (целевой ориентир первой очереди).</p>
+<p>3. Хранить один «золотой» образ ОС и отдавать его многим клиентам без порчи оригинала (Copy-on-Write / write-back).</p>
+<p>4. Дать администратору простой интерфейс: сеть, DHCP, диски, образы, клиенты, статус — без знания Linux.</p>
+<p>5. Уложить саму ОС сервера в **100–200 МБ** (Live USB / Disk-on-Module).</p>
+<h3>1.3. Задачи первой очереди</h3>
+<p>• Собрать минимальное ядро и rootfs (Buildroot / Yocto / Alpine).</p>
+<p>• Поднять DHCP + TFTP + iPXE и iSCSI Target (или NBD).</p>
+<p>• Реализовать write-back через ZFS clones или LVM+dm-snapshot.</p>
+<p>• Реализовать read-cache в RAM и write-cache на SSD/NVMe.</p>
+<p>• Сделать TUI-оболочку (ncurses/dialog) как основной UI.</p>
+<p>• Провести нагрузочный тест одновременной загрузки 50+ ПК.</p>
+<h3>1.4. Вне скоупа первой очереди (явно)</h3>
+<p>Не блокируют старт, но **не обязательны** в MVP:</p>
+<p>• полноценный аналог CCBoot Hybrid (ОС на локальном SSD клиента, с сервера только game-диск);</p>
+<p>• графический PXE-меню конструктор «как в CCBoot»;</p>
+<p>• облачный личный кабинет / SaaS;</p>
+<p>• автоматический PnP «один образ на любое железо» без участия администратора;</p>
+<p>• загрузка macOS-клиентов;</p>
+<p>• коммерческая система лицензирования.</p>
+<hr>
+<h2>2. Термины и сокращения</h2>
+<table>
+<tr><th>Термин</th><th>Определение</th></tr>
+<tr><td>Diskless / бездисковая загрузка</td><td>Клиентский ПК стартует по сети, системный диск — сетевой (iSCSI/NBD), локальный HDD/SSD не обязателен</td></tr>
+<tr><td>Appliance</td><td>Специализированная ОС с фиксированным набором служб и своей оболочкой, не «универсальный Linux»</td></tr>
+<tr><td>Золотой образ (golden image)</td><td>Базовый неизменяемый образ системного диска клиента</td></tr>
+<tr><td>Write-back</td><td>Дифференциальные записи клиента на сервере; по умолчанию сбрасываются при перезагрузке</td></tr>
+<tr><td>Super Client / суперпользователь</td><td>Режим, в котором изменения одного клиента сливаются в золотой образ</td></tr>
+<tr><td>Restore point</td><td>Снимок золотого образа для отката/слияния</td></tr>
+<tr><td>Personal disk</td><td>Постоянный диск клиента, не сбрасываемый при reboot</td></tr>
+<tr><td>Game disk</td><td>Общий диск приложений/игр, отдаваемый нескольким клиентам</td></tr>
+<tr><td>iPXE</td><td>Расширенный сетевой загрузчик (замена/надстройка PXE)</td></tr>
+<tr><td>iSCSI Target</td><td>Сервер блочного устройства по iSCSI</td></tr>
+<tr><td>NBD</td><td>Network Block Device, альтернатива iSCSI</td></tr>
+<tr><td>LIO</td><td>Linux-IO Target (in-kernel iSCSI)</td></tr>
+<tr><td>CoW</td><td>Copy-on-Write</td></tr>
+<tr><td>TUI</td><td>Текстовый интерфейс (ncurses/dialog)</td></tr>
+<tr><td>DOM</td><td>Disk on Module — маленький модуль вместо HDD для самой appliance-ОС</td></tr>
+<tr><td>LACP</td><td>Агрегация Ethernet-каналов (IEEE 802.3ad)</td></tr>
+</table>
+<hr>
+<h2>3. Назначение и сценарии использования</h2>
+<h3>3.1. Назначение</h3>
+<p>LXBoot — сервер бездисковой загрузки:</p>
+<p>• выдаёт IP и параметры PXE (DHCP);</p>
+<p>• отдаёт загрузчик (TFTP/HTTP);</p>
+<p>• монтирует клиенту системный диск по iSCSI (основной путь) или NBD (запасной);</p>
+<p>• изолирует записи клиентов от золотого образа;</p>
+<p>• кэширует чтение в RAM и запись на SSD;</p>
+<p>• управляется через TUI (и опционально Web).</p>
+<h3>3.2. Типовые сценарии</h3>
+<p>1. **Интернет-кафе / клуб:** парк ПК без дисков, один Windows-образ, чистое состояние после reboot, общий game-диск.</p>
+<p>2. **Учебный класс:** Linux- или Windows-клиенты, сброс лабораторных изменений.</p>
+<p>3. **Офис / тонкие рабочие места:** персональные диски для профилей, золотой образ ОС.</p>
+<p>4. **Лаборатория разработки:** несколько образов (Win10, Win11, Debian), выбор по группе или PXE-меню.</p>
+<h3>3.3. Сравнение с CCBoot (что должно быть сопоставимо)</h3>
+<table>
+<tr><th>Возможность CCBoot</th><th>Требование LXBoot</th></tr>
+<tr><td>DHCP + TFTP + PXE/iPXE + iSCSI в одном продукте</td><td>Обязательно (all-in-one appliance)</td></tr>
+<tr><td>Загрузка Windows-клиентов без локального диска</td><td>Обязательно (Win10/11 как цель; Linux-клиенты — плюс)</td></tr>
+<tr><td>Write-back, сброс при reboot</td><td>Обязательно</td></tr>
+<tr><td>Super Client → обновление образа</td><td>Обязательно</td></tr>
+<tr><td>Restore points: create / merge to last / restore to last</td><td>Обязательно (1-я или 2-я очередь)</td></tr>
+<tr><td>RAM cache + SSD cache</td><td>Обязательно</td></tr>
+<tr><td>Personal disk</td><td>2-я очередь (желательно сразу заложить модель)</td></tr>
+<tr><td>Game disk</td><td>2-я очередь</td></tr>
+<tr><td>Multi-NIC / LACP / load balance</td><td>LACP — 1-я очередь; multi-server LB — 2-я</td></tr>
+<tr><td>UEFI + Legacy BIOS</td><td>Обязательно</td></tr>
+<tr><td>Secure Boot клиентов</td><td>2-я очередь</td></tr>
+<tr><td>Загрузка образа с физического диска / VHD / IMG</td><td>Обязательно; VMDK — желательно</td></tr>
+<tr><td>PnP один образ на разное железо</td><td>2-я очередь</td></tr>
+<tr><td>GUI Windows-сервера</td><td>Заменяется TUI + опциональный Web, **не** Windows GUI</td></tr>
+<tr><td>Сервер на Windows</td><td>**Запрещено.** Только Linux-appliance</td></tr>
+</table>
+<hr>
+<h2>4. Архитектура</h2>
+<h3>4.1. Принцип</h3>
+<p>Клиент:</p>
+<p>1. Включает PXE/UEFI Network Boot.</p>
+<p>2. Получает DHCP: IP, next-server, имя NBP.</p>
+<p>3. Качает iPXE/PXELINUX по TFTP (далее — chainload, опционально HTTP).</p>
+<p>4. iPXE подключает iSCSI LUN (системный диск = золотой образ + per-client overlay).</p>
+<p>5. Стартует гостевая ОС (Windows или Linux) как с локального диска.</p>
+<p>6. Записи идут в write-back на SSD/NVMe сервера, чтение горячих блоков — из RAM-cache.</p>
+<p>Сервер — один Linux-appliance:</p>
+<pre>
+┌─────────────────────────────────────────────────────────────┐
+│                     LXBoot Appliance                         │
+│  TUI / Web  →  control-daemon (lxbootd)                      │
+│       │                                                      │
+│       ├─ dnsmasq или Kea (DHCP) + TFTP + HTTP boot           │
+│       ├─ iPXE bundle                                          │
+│       ├─ LIO/targetcli (iSCSI)  и/или nbd-server             │
+│       ├─ ZFS или LVM+dm-snapshot (образы, клоны, write-back) │
+│       ├─ bcache/dm-cache или ZFS ARC+L2ARC (RAM/SSD cache)   │
+│       └─ metrics (cpu, ram, nic, disk i/o, client status)    │
+│                                                              │
+│  Rootfs: Buildroot / Yocto / Alpine, без desktop             │
+│  Носитель ОС: USB / DOM, 100–200 МБ                          │
+│  Данные: отдельные диски Image / Write-back / SSD-cache      │
+└─────────────────────────────────────────────────────────────┘
+</pre>
+<h3>4.2. Базовый стек (решение по умолчанию для MVP)</h3>
+<p>Зафиксировать для первой реализации, чтобы не расползтись по вариантам:</p>
+<table>
+<tr><th>Слой</th><th>Выбор MVP</th><th>Альтернатива</th></tr>
+<tr><td>Сборка ОС</td><td>**Buildroot**</td><td>Yocto, Alpine + squashfs</td></tr>
+<tr><td>Init</td><td>**systemd** или OpenRC (один на всю сборку)</td><td>—</td></tr>
+<tr><td>DHCP/TFTP</td><td>**dnsmasq**</td><td>Kea + tftpd-hpa</td></tr>
+<tr><td>Bootloader</td><td>**iPXE** (BIOS + UEFI)</td><td>PXELINUX как fallback</td></tr>
+<tr><td>Блок клиенту</td><td>**iSCSI (LIO)**</td><td>NBD, если iSCSI на конкретном клиенте не встаёт</td></tr>
+<tr><td>Образы и CoW</td><td>**ZFS** (dataset на образ, clone на клиента)</td><td>LVM thin + snapshot</td></tr>
+<tr><td>Read cache</td><td>ZFS ARC (RAM)</td><td>dm-cache / bcache</td></tr>
+<tr><td>Write / L2 cache</td><td>NVMe/SSD как ZFS SLOG/L2ARC и/или отдельный pool write-back</td><td>bcache</td></tr>
+<tr><td>TUI</td><td>**dialog/ncurses** + CLI `lxboot`</td><td>—</td></tr>
+<tr><td>Web</td><td>опционально, 2-я очередь: статика + API того же демона</td><td>—</td></tr>
+<tr><td>Конфиг</td><td>`/etc/lxboot/` + SQLite или JSON datastore</td><td>—</td></tr>
+</table>
+<p>**Правило:** золотой образ **никогда** не монтируется клиентам RW напрямую. Клиент всегда получает clone/snapshot.</p>
+<h3>4.3. Роли дисков сервера</h3>
+<p>Как в CCBoot, администратор назначает роль диску, а не правит fstab вручную:</p>
+<table>
+<tr><th>Роль</th><th>Назначение</th></tr>
+<tr><td>System / DOM</td><td>Сама appliance (USB/DOM), read-only squashfs + overlay</td></tr>
+<tr><td>Image</td><td>Золотые образы и restore points</td></tr>
+<tr><td>Write-back</td><td>Per-client дифференциалы</td></tr>
+<tr><td>SSD cache</td><td>Ускорение чтения образов и/или write-back</td></tr>
+<tr><td>Game (2-я очередь)</td><td>Общий диск приложений</td></tr>
+<tr><td>Offline</td><td>Диск отсутствует/не используется</td></tr>
+</table>
+<p>Если Image или Write-back не назначены — TUI обязан это показать как ошибку конфигурации и **не** молча писать на системный DOM.</p>
+<h3>4.4. Сетевая модель</h3>
+<p>• Один или несколько Ethernet (1/10/25/40 GbE).</p>
+<p>• Поддержка LACP для каналов к клиентской сети.</p>
+<p>• Рекомендуется отделять (логически или физически):</p>
+<p>  - **boot/storage LAN** (DHCP/PXE/iSCSI);</p>
+<p>  - **uplink** (интернет, если нужен серверу).</p>
+<p>• Встроенный DHCP может работать как:</p>
+<p>  - **authoritative DHCP** всей LAN (другой DHCP должен быть выключен);</p>
+<p>  - **proxyDHCP / PXE-only** (2-я очередь, для сетей с существующим DHCP).</p>
+<p>• Порты (ориентир, аналог CCBoot):</p>
+<p>  - UDP 67/68 DHCP, UDP 69 TFTP, TCP 3260 iSCSI, TCP/UDP 80/8080 HTTP boot и Web UI, служебный API (например 8001, только localhost или LAN admin).</p>
+<h3>4.5. Логика write-back и super-client</h3>
+<p>**Обычный клиент**</p>
+<p>• При старте: ZFS clone (или LVM snapshot) от золотого образа → LUN.</p>
+<p>• Запись клиента живёт в clone.</p>
+<p>• При выключении/перезагрузке по политике группы:</p>
+<p>  - **Reset** (по умолчанию): clone уничтожается, следующий boot — снова чистый;</p>
+<p>  - **Keep** (опционально): clone сохраняется (персональная «грязь» системы);</p>
+<p>  - personal disk при этом не трогается.</p>
+<p>**Super Client**</p>
+<p>• Админ включает режим на одном ПК.</p>
+<p>• Записи идут в выделенный clone, помеченный как «кандидат в золото».</p>
+<p>• После выключения: действия «Сохранить в образ» / «Отбросить».</p>
+<p>• Сохранение создаёт новый restore point и переключает «текущий» золотой образ.</p>
+<p>• Пока Super Client активен, TUI показывает предупреждение: нагрузка выше, массовое обновление game-диска блокируется (когда появится game-диск).</p>
+<p>**Restore points**</p>
+<p>• Create (автоматически при сохранении Super Client).</p>
+<p>• Restore to last.</p>
+<p>• Merge to last.</p>
+<p>• Merge all (освобождение места; необратимо; только если образ проверен).</p>
+<hr>
+<h2>5. Функциональные требования</h2>
+<p>Приоритеты: **M** — must (MVP), **S** — should (сразу после MVP), **C** — could.</p>
+<h3>5.1. Управление клиентами — M</h3>
+<p>1. Учёт клиента по MAC (основной ключ).</p>
+<p>2. Привязка IP: вручную или из пула DHCP.</p>
+<p>3. Имя ПК, заметка, группа.</p>
+<p>4. Автообнаружение неизвестных PXE-MAC (появление в «непрописанных»).</p>
+<p>5. Группы: разный образ, разная политика write-back, разные дополнительные LUN.</p>
+<p>6. Статус: online/offline (по iSCSI session / DHCP lease / last seen).</p>
+<p>7. Метрики клиента: примерная скорость чтения/записи, объём write-back, uptime сессии.</p>
+<p>8. Действия: включить/выключить Super Client, сбросить write-back, назначить образ, отправить reboot **если** есть клиентский агент (агент — S).</p>
+<h3>5.2. Управление образами — M</h3>
+<p>1. Импорт:</p>
+<p>   - сырой `.img` / `.raw`;</p>
+<p>   - `.vhd` / `.vhdx` (обязательно для миграции с CCBoot/Hyper-V);</p>
+<p>   - выгрузка с физического диска, подключённого к серверу (P2V).</p>
+<p>2. Загрузка образа **с клиента** по сети (аналог CCBoot Image Upload) — S, в MVP допустим импорт файлом на сервер.</p>
+<p>3. Назначение образа группе или конкретному MAC.</p>
+<p>4. Write-back на SSD/NVMe, золотой образ на Image-диске.</p>
+<p>5. Super Client и слияние в золотой образ.</p>
+<p>6. Несколько образов на сервере (Windows и Linux).</p>
+<p>7. Монтирование образа на сервере для обслуживания (loop/zvol) — S.</p>
+<p>Форматы хранения внутри пула: zvol или dataset+file. Для iSCSI предпочтителен **zvol**.</p>
+<h3>5.3. Кэширование — M</h3>
+<p>1. Read cache в RAM: горячие блоки золотого образа (загрузка Windows, DLL, игровые файлы — когда будет game-диск).</p>
+<p>2. Write cache / write-back на SSD/NVMe, не на медленном HDD.</p>
+<p>3. В TUI задаются размеры RAM-cache на роль диска (как «RAM Cache» в CCBoot).</p>
+<p>4. Защита: нельзя отдать под cache больше, чем свободно, с запасом под ОС (минимум 1–2 ГБ RAM серверу).</p>
+<p>5. Отображение disk idle / saturation — S.</p>
+<h3>5.4. DHCP / PXE / iSCSI — M</h3>
+<p>1. Настройка пула IP, netmask, gateway, DNS, lease time.</p>
+<p>2. Резервации IP по MAC.</p>
+<p>3. Выбор boot-файла BIOS vs UEFI автоматически (dnsmasq `dhcp-match`).</p>
+<p>4. iSCSI: LUN на клиента, CHAP опционально (S), взаимная изоляция LUN.</p>
+<p>5. Запрет двум клиентам писать в один и тот же RW clone.</p>
+<p>6. Логирование отказов PXE/TFTP/iSCSI в TUI «журнал».</p>
+<h3>5.5. Оболочка управления (урезанный интерфейс) — M</h3>
+<p>После boot сервера — **только меню LXBoot**, не bash prompt.</p>
+<p>Пункты меню MVP:</p>
+<p>1. Сетевые интерфейсы: IP, mask, gateway, DNS, LACP.</p>
+<p>2. DHCP: пул, опции, включения/выключения службы.</p>
+<p>3. Диски: обнаружение, роль, монтирование, RAM-cache.</p>
+<p>4. Образы: список, импорт, образ по умолчанию, restore points.</p>
+<p>5. Клиенты: список MAC/IP/статус, группы, Super Client.</p>
+<p>6. Статус системы: CPU, RAM, сеть (pps/bps), Disk I/O, число online-клиентов.</p>
+<p>7. Журнал событий и ошибок.</p>
+<p>8. Служебное: перезапуск служб, reboot/shutdown appliance, смена пароля admin.</p>
+<p>9. «Техническая консоль» (root shell) — **скрытый пункт по паролю**, не на первом экране.</p>
+<p>Web-интерфейс (S): те же функции, без обязательного JS-фреймворка; API того же `lxbootd`.</p>
+<h3>5.6. Personal disk и Game disk — S</h3>
+<p>1. Personal disk: отдельный zvol на клиента, переживает reboot системного образа.</p>
+<p>2. Game disk: один read-only (или CoW с редким Super Client) LUN, общий для группы.</p>
+<p>3. Несколько LUN на клиента (C:, D: для Windows).</p>
+<h3>5.7. Отказоустойчивость и масштаб — C / частично S</h3>
+<p>1. Multi-NIC без LACP: разнесение DHCP и iSCSI — S.</p>
+<p>2. LACP — M (настройка в TUI), работоспособность зависит от свитча.</p>
+<p>3. Второй сервер + failover/load balance — C (заложить протокол состояния позже).</p>
+<p>4. Целевая нагрузка MVP: **50+ одновременных загрузок**, затем устойчивая работа сессии.</p>
+<h3>5.8. Клиентские ОС</h3>
+<table>
+<tr><th>Гостевая ОС</th><th>Приоритет</th></tr>
+<tr><td>Windows 10 / 11 (x64), BIOS и UEFI</td><td>M</td></tr>
+<tr><td>Windows Server 2019/2022 как образ</td><td>S</td></tr>
+<tr><td>Debian/Ubuntu/Windows-PE для обслуживания</td><td>S</td></tr>
+<tr><td>Старые Windows 7 — best effort</td><td>C</td></tr>
+</table>
+<p>Клиентский агент (S): сервисы Windows/Linux для hostname, дисков, сбора NIC-драйверов, команды reboot.</p>
+<hr>
+<h2>6. Нефункциональные требования</h2>
+<h3>6.1. Размер и характер ОС сервера</h3>
+<p>• Образ appliance ≤ **200 МБ** (цель 100 МБ без iPXE-бандлов и firmware).</p>
+<p>• Rootfs: squashfs + tmpfs overlay; данные образов **не** на корневом разделе.</p>
+<p>• Работа как Live USB и как установка на DOM/USB.</p>
+<p>• Обновление appliance — атомарная смена образа (A/B или replace + reboot), конфиг `/etc/lxboot` сохраняется.</p>
+<h3>6.2. Производительность</h3>
+<p>Ориентир на стенде:</p>
+<p>• 50 клиентов, одновременный PXE+Windows boot «холодный старт»;</p>
+<p>• сеть сервера 10 GbE (минимум для этого теста; 1 GbE — деградация, но система должна работать на меньшем числе клиентов);</p>
+<p>• Image на HDD или SSD, write-back на NVMe, RAM ≥ 32 ГБ.</p>
+<p>Критерии (первая очередь, уточняются на прототипе):</p>
+<p>• 50 DHCP+TFTP выдач без потери PXE;</p>
+<p>• iSCSI login всех 50 за разумное окно (фиксируется по результатам этапа 5);</p>
+<p>• после массового boot — отсутствие обвального latency iSCSI (watchdog, очередь, drop).</p>
+<h3>6.3. Надёжность</h3>
+<p>• Падение TUI не роняет iSCSI.</p>
+<p>• Службы под systemd/OpenRC с автоперезапуском.</p>
+<p>• Некорректное выключение: ZFS intent log / import; клиенты после рестарта сервера получают новые clone по политике.</p>
+<p>• Заполнение write-back диска: запрет новых сессий + авария в TUI, без порчи золотого образа.</p>
+<h3>6.4. Безопасность</h3>
+<p>• Пароль администратора TUI.</p>
+<p>• Нет открытого SSH по умолчанию (включается из меню).</p>
+<p>• iSCSI LUN только для известного IQN/IP/MAC.</p>
+<p>• Web UI (когда появится) — HTTPS, пароль, bind на выбранный интерфейс.</p>
+<p>• Без «магического» root-login на первом экране.</p>
+<h3>6.5. Совместимость железа сервера</h3>
+<p>Ядро: virtio, основные Intel/Realtek/Broadcom NIC, NVMe, AHCI, USB storage, bonding, vlan.  </p>
+<p>Расширение драйверов — через пересборку Buildroot, не через apt «на живую» (если база Alpine — отдельное решение, но цель та же: закрытый набор).</p>
+<h3>6.6. Документация</h3>
+<p>• Руководство администратора (первый запуск, DHCP-конфликт, импорт образа, Super Client).</p>
+<p>• Схема сети «выключите DHCP на роутере».</p>
+<p>• Описание ролей дисков и расчёта RAM-cache.</p>
+<hr>
+<h2>7. Требования к аппаратному обеспечению</h2>
+<h3>7.1. Сервер (минимум для разработки)</h3>
+<p>• CPU x86_64, 4 ядра;</p>
+<p>• RAM 16 ГБ;</p>
+<p>• 1 GbE;</p>
+<p>• USB для appliance;</p>
+<p>• любой диск под Image+WB (можно один, роли logical).</p>
+<h3>7.2. Сервер (рекомендуемый на 50 клиентов)</h3>
+<p>• CPU 8+ ядер;</p>
+<p>• RAM 32–64 ГБ (часть под ARC);</p>
+<p>• 10 GbE, желательно 2 порта / LACP;</p>
+<p>• NVMe под write-back и L2ARC;</p>
+<p>• HDD/SSD большой ёмкости под Image;</p>
+<p>• DOM/USB под ОС.</p>
+<h3>7.3. Клиенты</h3>
+<p>• PXE 2.x NIC или UEFI HTTP/PXE;</p>
+<p>• без обязательного локального диска;</p>
+<p>• для Windows-образа — типичные CPU/RAM гостевой ОС.</p>
+<hr>
+<h2>8. Интерфейсы и данные</h2>
+<h3>8.1. Модель данных (минимум)</h3>
+<p>Сущности: `nic`, `dhcp_pool`, `disk`, `image`, `restore_point`, `group`, `client`, `session`, `lun_map`, `event_log`.</p>
+<p>Клиент: MAC, IP, hostname, group_id, image_id, wb_policy, super_client, personal_zvol, last_seen, rx/tx stats.</p>
+<h3>8.2. CLI</h3>
+<p>Пример: `lxboot client list`, `lxboot image import FILE`, `lxboot client super MAC on`, `lxboot status`.  </p>
+<p>TUI — обёртка над тем же CLI/демоном.</p>
+<h3>8.3. Журналирование</h3>
+<p>journald или файлы `/var/log/lxboot/`. События: PXE, iSCSI login/logout, super-client, import, disk full, service restart.</p>
+<hr>
+<h2>9. Этапы разработки</h2>
+<h3>Этап 1. Прототип ядра и appliance-rootfs</h3>
+<p>• Buildroot: kernel с bonding, iscsi_target_mod, zfs (или lvm), squashfs, NIC/NVMe.</p>
+<p>• Автологин в TUI-заглушку.</p>
+<p>• Размер образа в лимите 200 МБ.</p>
+<p>**Результат:** загружается с USB, меню «about/reboot», есть сеть.</p>
+<h3>Этап 2. Сетевая загрузка</h3>
+<p>• dnsmasq: DHCP+TFTP, iPXE BIOS/UEFI.</p>
+<p>• LIO: один тестовый LUN (Linux или Windows image).</p>
+<p>• Один клиент грузится diskless.</p>
+<p>**Результат:** end-to-end PXE → iSCSI → OS.</p>
+<h3>Этап 3. Snapshot / write-back</h3>
+<p>• Пул ZFS, золотой zvol, clone на MAC.</p>
+<p>• Политика reset при reboot.</p>
+<p>• Super Client: promote clone → новый golden + restore point.</p>
+<p>• Разнесение Image и Write-back.</p>
+<p>**Результат:** два клиента с одного образа, изоляция записей; обновление образа через Super Client.</p>
+<h3>Этап 4. TUI</h3>
+<p>• Пункты раздела 5.5.</p>
+<p>• Статус CPU/RAM/Net/Disk.</p>
+<p>• Нет выхода в shell без пароля.</p>
+<p>**Результат:** админ настраивает стенд без ручного редактирования конфигов.</p>
+<h3>Этап 5. Производительность</h3>
+<p>• 50+ одновременных загрузок.</p>
+<p>• Тюнинг: irq affinity, jumbo (опционально), ARC, iSCSI queue, nic offload.</p>
+<p>• Замер: время boot, IOPS, насыщение 10G.</p>
+<p>**Результат:** отчёт и список параметров по умолчанию.</p>
+<h3>Этап 6 (S). Расширения</h3>
+<p>Personal/Game диски, Web UI, клиентский агент, proxyDHCP, VHDX upload с клиента.</p>
+<hr>
+<h2>10. Приёмка (MVP)</h2>
+<p>Система принята, если:</p>
+<p>1. Appliance грузится с USB/DOM в TUI, bash не предлагается.</p>
+<p>2. Из TUI настраиваются IP, DHCP-пул, роли дисков.</p>
+<p>3. Клиент BIOS и клиент UEFI получают загрузчик и стартуют образ.</p>
+<p>4. Два клиента на одном золотом образе не портят друг друга и не портят golden.</p>
+<p>5. Reboot клиента в режиме Reset возвращает чистую систему.</p>
+<p>6. Super Client сохраняет изменения в новый золотой образ; остальные видят его после своего reboot.</p>
+<p>7. RAM-cache включается и виден в статусе (рост hit ratio или хотя бы выделенный объём ARC).</p>
+<p>8. Write-back живёт на назначенном SSD/NVMe.</p>
+<p>9. Размер appliance ≤ 200 МБ.</p>
+<p>10. На стенде зафиксирован прогон ≥ 50 одновременных загрузок либо обоснованный потолок железа с планом оптимизации.</p>
+<p>11. Документ «быстрый старт» прилагается.</p>
+<hr>
+<h2>11. Риски</h2>
+<table>
+<tr><th>Риск</th><th>Митигация</th></tr>
+<tr><td>ZFS в Buildroot тяжелее лимита 200 МБ</td><td>Вынести модули, резать firmware; fallback LVM thin</td></tr>
+<tr><td>Windows iSCSI boot капризен на UEFI</td><td>Эталонный iPXE script, тестировать Win10 и Win11 отдельно</td></tr>
+<tr><td>Конфликт DHCP с роутером</td><td>Явное предупреждение в TUI, режим «только PXE» во 2-й очереди</td></tr>
+<tr><td>1 GbE не тянет 50 Windows boot</td><td>Документировать 10 GbE как норму для 50+</td></tr>
+<tr><td>Лицензии Windows на diskless</td><td>Вне скоупа продукта; в руководстве — ответственность заказчика</td></tr>
+<tr><td>Патенты/переиспользование кода CCBoot</td><td>Чистая реализация на Linux-стеке, без реверса бинарников CCBoot</td></tr>
+</table>
+<hr>
+<h2>12. Открытые решения (зафиксировать на старте этапа 1)</h2>
+<p>1. Init: systemd vs OpenRC.  </p>
+<p>2. CoW: ZFS vs LVM thin — **рекомендация ТЗ: ZFS**, LVM как plan B.  </p>
+<p>3. Нужен ли Web в MVP: **нет**, только TUI.  </p>
+<p>4. Клиентский агент Windows: не блокирует MVP.  </p>
+<p>5. Имя пакетов/демонов: `lxboot`, `lxbootd`.</p>
+<hr>
+<h2>13. Состав поставки</h2>
+<p>• Образ USB/ISO appliance.</p>
+<p>• Исходники сборки (Buildroot overlay, конфиг ядра, TUI, демон).</p>
+<p>• Набор iPXE.</p>
+<p>• ТЗ, руководство администратора, отчёт этапа 5.</p>
+<p>• Скрипты импорта `img/vhd`.</p>
+<hr>
+<h2>14. Итог</h2>
+<p>LXBoot — **Linux-appliance для diskless PXE/iSCSI**, функциональный аналог CCBoot для кафе и классов: золотой образ, write-back, Super Client, RAM+SSD cache, управление из TUI без «обычного Linux». Серверная ОС — не Windows и не полный дистрибутив, а сборка 100–200 МБ с ядром, DHCP/TFTP/iPXE, iSCSI, ZFS/LVM и оболочкой администратора.</p>
+</body></html>

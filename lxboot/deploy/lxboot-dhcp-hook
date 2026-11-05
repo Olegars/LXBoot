@@ -1,0 +1,4 @@
+#!/bin/sh
+export LXBOOT_PREFIX="${LXBOOT_PREFIX:-/var/lib/lxboot}"
+export LXBOOT_SOCK="${LXBOOT_SOCK:-/run/lxboot/lxbootd.sock}"
+exec /usr/bin/lxboot lease "$1" "$2" "$3" "$4"
